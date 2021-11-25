@@ -4,6 +4,7 @@
 #define OZ_SPIFFS_DB_BACKUP_EXT   ".back"
 
 #include <i_oz_fs.h>
+
 /**
  *
  *
@@ -18,6 +19,7 @@ public:
     int begin(const char *DbName) override;
     String read() override;
     int print(String Database) override;
+    int clear() override;
 
 protected:
     unsigned char generate_crc(String str);

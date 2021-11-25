@@ -36,6 +36,8 @@ public:
 
   virtual int print(String value) = 0;
 
+  virtual int clear() = 0;
+
   virtual ~i_oz_fs() = default;
 };
 

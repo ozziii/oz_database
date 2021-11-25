@@ -7,7 +7,7 @@
 int oz_spiffs_db::begin(const char *DbName)
 {
     if (!esp_spiffs_mounted(NULL))
-        if (!SPIFFS.begin())
+        if (!SPIFFS.begin(true))
             return OZFS_ERR_BEGIN_FS;
 
     if (DbName[0] == '/')
@@ -66,7 +66,6 @@ int oz_spiffs_db::print(String Database)
     if (!file)
         return OZFS_ERR_OPEN_FILE;
 
-    
     unsigned char crc = this->generate_crc(Database);
     Database += (char) crc;
 
@@ -77,6 +76,15 @@ int oz_spiffs_db::print(String Database)
         return OZFS_ERR_OK;
     else
         return OZFS_ERR_SAVEFILE;
+}
+
+int oz_spiffs_db::clear()
+{
+    SPIFFS.remove(this->_db_name);
+    String back_filename = this->_db_name + OZ_SPIFFS_DB_BACKUP_EXT;
+    SPIFFS.remove(back_filename);
+
+    return OZFS_ERR_OK;
 }
 
 unsigned char oz_spiffs_db::generate_crc(String str)

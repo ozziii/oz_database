@@ -1,19 +1,13 @@
 
 #include "oz_db.h"
 
-void oz_db_save_task_ISR(TimerHandle_t xTimer)
-{
-    auto database = (oz_db *)pvTimerGetTimerID(xTimer);
-    database->_save_database();
-}
-
 void oz_db_free_task_ISR(TimerHandle_t xTimer)
 {
     auto database = (oz_db *)pvTimerGetTimerID(xTimer);
     database->_free_database();
 }
 
-oz_db::oz_db(std::map<const char *, const char *> default_value)
+oz_db::oz_db(std::map<String, String> default_value)
 {
     if (default_value.size() > 0)
         this->_default = default_value;
@@ -26,21 +20,65 @@ oz_db::oz_db(std::map<const char *, const char *> default_value)
         pdFALSE,
         (void *)this,
         oz_db_free_task_ISR);
-
-    this->_save_timer = xTimerCreate(
-        "oz_db_save_task",
-        pdMS_TO_TICKS(OZ_DB_SAVE_TIMER),
-        pdFALSE,
-        (void *)this,
-        oz_db_save_task_ISR);
 }
 
-String oz_db::get_base_parameter(const char *Name)
+String oz_db::get_all_db()
 {
     if (!this->_is_open)
-        if (!this->_load_database())
+        if (this->_load_database() != OZDB_ERR_OK)
         {
-            OZDB_LOGE("Error load database");
+            log_e("Error load database");
+            return String();
+        }
+
+    String databaseStr = String();
+
+    size_t err = serializeJson(*this->_Jdb, databaseStr);
+
+    if (err == 0)
+    {
+        log_e("Seserialize error");
+        return String();
+    }
+
+    return databaseStr;
+}
+
+int oz_db::set_all_db(String dbstr)
+{
+    this->_free_database();
+
+    this->_Jdb = new DynamicJsonDocument(OZ_DB_JSONDOCUMENT_DIMENSION);
+
+    DeserializationError error = deserializeJson(*this->_Jdb, dbstr);
+
+    if (error)
+    {
+        delete this->_Jdb;
+        this->_Jdb = nullptr;
+
+        log_e("Deserialize error [%s] ", error.c_str());
+        return OZDB_ERR_DESERIALIZATION;
+    }
+
+    this->_is_open = true;
+    return this->commit();
+}
+
+int oz_db::clear_db()
+{
+    i_oz_fs *file = this->_get_file();
+    file->clear();
+    return this->_free_database();
+}
+
+String oz_db::get_base_parameter(String Name)
+{
+    if (!this->_is_open)
+        if (this->_load_database() != OZDB_ERR_OK)
+        {
+
+            log_e("Error load database");
             return String();
         }
 
@@ -55,7 +93,7 @@ String oz_db::get_base_parameter(const char *Name)
 
         if (default_value == this->_default.end())
         {
-            OZDB_LOGW("Parameter (%s) not exist", Name);
+            log_w("Parameter (%s) not exist", Name);
             return String();
         }
 
@@ -63,24 +101,82 @@ String oz_db::get_base_parameter(const char *Name)
     }
 }
 
-oz_db_error oz_db::set_base_parameter(const char *Name, const char *Value)
+String oz_db::get_base_parameter_f(const char *format, ...)
+{
+    va_list args;
+    va_start(args, format);
+    int len = vsnprintf(nullptr, 0, format, args) + 1;
+    char *buffer = new char[len];
+    vsnprintf(buffer, len, format, args);
+    va_end(args);
+    String ret = this->get_base_parameter(buffer);
+    delete[] buffer;
+    return ret;
+}
+
+oz_db_error oz_db::set_base_parameter(String Name, String Value)
 {
     if (this->_default.find(Name) == this->_default.end())
     {
-        OZDB_LOGW("Parameter (%s) not exist", Name);
+        log_w("Parameter (%s) not exist", Name);
         return OZDB_ERR_PARM_NOT_EXIST;
     }
 
     if (!this->_is_open)
-        if (!this->_load_database())
+        if (this->_load_database() != OZDB_ERR_OK)
         {
-            OZDB_LOGE("Error load database");
+            log_e("Error load database");
             return OZDB_ERR_OPEN_DB;
         }
 
     (*this->_Jdb)[OZ_DB_CONST_BASE][Name] = Value;
 
-    xTimerStart(this->_save_timer, 0);
+    return OZDB_ERR_OK;
+}
+
+String oz_db::get_internal_parameter(String Name) 
+{
+    if (!this->_is_open)
+        if (this->_load_database() != OZDB_ERR_OK)
+        {
+
+            log_e("Error load database");
+            return String();
+        }
+
+    if ((*this->_Jdb)[OZ_DB_CONST_INTERNAL].containsKey(Name))
+    {
+        String ret = (*this->_Jdb)[OZ_DB_CONST_INTERNAL][Name];
+        return ret;
+    }
+
+    log_d("Inrenal setting not found");
+    return String();
+}
+
+String oz_db::get_internal_parameter_f(const char *format, ...) 
+{
+    va_list args;
+    va_start(args, format);
+    int len = vsnprintf(nullptr, 0, format, args) + 1;
+    char *buffer = new char[len];
+    vsnprintf(buffer, len, format, args);
+    va_end(args);
+    String ret = this->get_internal_parameter(buffer);
+    delete[] buffer;
+    return ret;
+}
+
+oz_db_error oz_db::set_internal_parameter(String Name, String Value)
+{
+    if (!this->_is_open)
+        if (this->_load_database() != OZDB_ERR_OK)
+        {
+            log_e("Error load database");
+            return OZDB_ERR_OPEN_DB;
+        }
+
+    (*this->_Jdb)[OZ_DB_CONST_INTERNAL][Name] = Value;
 
     return OZDB_ERR_OK;
 }
@@ -88,9 +184,9 @@ oz_db_error oz_db::set_base_parameter(const char *Name, const char *Value)
 JsonArray oz_db::get_plugin()
 {
     if (!this->_is_open)
-        if (!this->_load_database())
+        if (this->_load_database() != OZDB_ERR_OK)
         {
-            OZDB_LOGE("Error load database");
+            log_e("Error load database");
             return JsonArray();
         }
 
@@ -100,25 +196,28 @@ JsonArray oz_db::get_plugin()
 int oz_db::set_plugin(const char *plugins)
 {
     if (!this->_is_open)
-        if (!this->_load_database())
+        if (this->_load_database() != OZDB_ERR_OK)
         {
-            OZDB_LOGE("Error load database");
+            log_e("Error load database");
             return OZDB_ERR_OPEN_DB;
         }
 
-    DynamicJsonDocument Jplugins(4000);
+    DynamicJsonDocument Jplugins(OZ_DB_JSONDOCUMENT_DIMENSION);
 
     if (deserializeJson(Jplugins, plugins))
     {
-        OZDB_LOGE("Deserialization error");
+        log_e("Deserialization error");
         return OZDB_ERR_DESERIALIZATION;
     }
 
     (*this->_Jdb)[OZ_DB_CONST_PLUGIN] = Jplugins;
 
-    xTimerStart(this->_save_timer, 0);
-
     return OZDB_ERR_OK;
+}
+
+int oz_db::commit()
+{
+    return this->_save_database();
 }
 
 oz_db::~oz_db()
@@ -133,13 +232,12 @@ int oz_db::_load_database()
 
     if (err != OZFS_ERR_OK)
     {
-        OZDB_LOGE("Error on open file");
+        log_e("Error on open file");
         delete file;
         return OZDB_ERR_OPEN_FILE;
     }
 
-    // TODO select DB DIMENSION
-    this->_Jdb = new DynamicJsonDocument(4000);
+    this->_Jdb = new DynamicJsonDocument(OZ_DB_JSONDOCUMENT_DIMENSION);
 
     String db_str = file->read();
 
@@ -151,13 +249,13 @@ int oz_db::_load_database()
         {
             delete this->_Jdb;
             delete file;
-            OZDB_LOGE("Deserialize error [%s] ", error.c_str());
+            log_e("Deserialize error [%s] ", error.c_str());
             return 0;
         }
     }
     else
     {
-        OZDB_LOGD("File is Empty");
+        log_d("File is Empty");
     }
 
     delete file;
@@ -165,6 +263,7 @@ int oz_db::_load_database()
     xTimerStart(this->_free_timer, 0);
     this->_is_open = true;
 
+    log_v("Open Database");
     return OZDB_ERR_OK;
 }
 
@@ -172,8 +271,8 @@ int oz_db::_save_database()
 {
     if (!this->_is_open)
     {
-        OZDB_LOGE("Error db not open");
-        OZDB_ERR_OPEN_DB;
+        log_e("Error db not open");
+        return OZDB_ERR_OPEN_DB;
     }
 
     String newDB = String();
@@ -182,7 +281,7 @@ int oz_db::_save_database()
 
     if (err == 0)
     {
-        OZDB_LOGE("Seserialize error");
+        log_e("Seserialize error");
         return OZDB_ERR_SERIALIZATION;
     }
 
@@ -191,7 +290,7 @@ int oz_db::_save_database()
 
     if (err != OZFS_ERR_OK)
     {
-        OZDB_LOGE("Error on open file");
+        log_e("Error on open file");
         delete file;
         return OZDB_ERR_OPEN_FILE;
     }
@@ -199,16 +298,21 @@ int oz_db::_save_database()
     file->print(newDB);
     delete file;
 
-    OZDB_LOGD("Database Saved!");
+    log_v("Database Saved!");
     return OZDB_ERR_OK;
 }
 
 int oz_db::_free_database()
 {
-    OZDB_LOGD("Free database memory");
     this->_is_open = false;
-    this->_Jdb->clear();
-    delete this->_Jdb;
+    if (this->_Jdb != nullptr)
+    {
+        this->_Jdb->clear();
+        delete this->_Jdb;
+        this->_Jdb = nullptr;
+    }
+
+    log_v("Db free database memory Actual ram: %u", ESP.getFreeHeap());
     return OZDB_ERR_OK;
 }
 
